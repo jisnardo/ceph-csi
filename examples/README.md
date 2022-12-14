@@ -1,13 +1,23 @@
-# How to test RBD and CephFS plugins with Kubernetes 1.13
+# How to test RBD and CephFS plugins with Kubernetes 1.14+
 
 ## Deploying Ceph-CSI services
+
+Create [ceph-config](./ceph-conf.yaml) configmap using the following command.
+
+```bash
+kubectl apply -f ./ceph-conf.yaml
+```
 
 Both `rbd` and `cephfs` directories contain `plugin-deploy.sh` and
 `plugin-teardown.sh` helper scripts.  You can use those to help you
 deploy/teardown RBACs, sidecar containers and the plugin in one go.
 By default, they look for the YAML manifests in
 `../../deploy/{rbd,cephfs}/kubernetes`.
-You can override this path by running `$ ./plugin-deploy.sh /path/to/my/manifests`.
+You can override this path by running
+
+```bash
+./plugin-deploy.sh /path/to/my/manifests
+```
 
 ## Creating CSI configuration
 
@@ -20,23 +30,61 @@ the required monitor details for the same, as in the provided [sample config
 Gather the following information from the Ceph cluster(s) of choice,
 
 * Ceph monitor list
-  * Typically in the output of `ceph mon dump`
-  * Used to prepare a list of `monitors` in the CSI configuration file
+   * Typically in the output of `ceph mon dump`
+   * Used to prepare a list of `monitors` in the CSI configuration file
 * Ceph Cluster fsid
-  * If choosing to use the Ceph cluster fsid as the unique value of clusterID,
-    * Output of `ceph fsid`
-  * Alternatively, choose a `<cluster-id>` value that is distinct per Ceph
+   * If choosing to use the Ceph cluster fsid as the unique value of clusterID,
+      * Output of `ceph fsid`
+   * Alternatively, choose a `<cluster-id>` value that is distinct per Ceph
     cluster in use by this kubernetes cluster
 
-Update the [sample config map](./csi-config-map-sample.yaml) with values
+Update the [sample configmap](./csi-config-map-sample.yaml) with values
 from a Ceph cluster and replace `<cluster-id>` with the chosen clusterID, to
-create the manifest for the config map which can be updated in the cluster
+create the manifest for the configmap which can be updated in the cluster
 using the following command,
 
-* `kubectl replace -f ./csi-config-map-sample.yaml`
+```bash
+kubectl replace -f ./csi-config-map-sample.yaml
+```
 
 Storage class and snapshot class, using `<cluster-id>` as the value for the
 option `clusterID`, can now be created on the cluster.
+
+## Running CephCSI with pod networking
+
+The current problem with Pod Networking, is when a CephFS/RBD/NFS volume is mounted
+in a pod using Ceph CSI and then the CSI CephFS/RBD/NFS plugin is restarted or
+terminated (e.g. by restarting or deleting its DaemonSet), all operations on
+the volume become blocked, even after restarting the CSI pods.
+
+The only workaround is to restart the node where the Ceph CSI plugin pod was
+restarted. This can be mitigated by running the `rbd map`/`mount -t` commands
+in a different network namespace which does not get deleted when the CSI
+CephFS/RBD/NFS plugin is restarted or terminated.
+
+If someone wants to run the CephCSI with the pod networking they can still do
+by setting the `netNamespaceFilePath`. If this path is set CephCSI will execute
+the `rbd map`/`mount -t` commands after entering the [network
+namespace](https://man7.org/linux/man-pages/man7/network_namespaces.7.html)
+specified by `netNamespaceFilePath` with the
+[nsenter](https://man7.org/linux/man-pages/man1/nsenter.1.html) command.
+
+`netNamespaceFilePath` should point to the network namespace of some
+long-running process, typically it would be a symlink to
+`/proc/<long running process id>/ns/net`.
+
+The long-running process can also be another pod which is a Daemonset which
+never restarts. This Pod should only be stopped and restarted when a node is
+stopped so that volume operations do not become blocked. The new DaemonSet pod
+can contain a single container, responsible for holding its pod network alive.
+It is used as a passthrough by the CephCSI plugin pod which when mounting or
+mapping will use the network namespace of this pod.
+
+Once the pod is created get its PID and create a symlink to
+`/proc/<PID>/ns/net` in the hostPath volume shared with the csi-plugin pod and
+specify the path in the `netNamespaceFilePath` option.
+
+*Note* This Pod should have `hostPID: true` in the Pod Spec.
 
 ## Deploying the storage class
 
@@ -75,6 +123,9 @@ your Ceph cluster setup.
 If you followed the documentation to create the rbdplugin, you shouldn't
 have to edit any other file.
 
+Note that it is recommended to create a volume snapshot or a PVC clone
+only when the PVC is not in use.
+
 After configuring everything you needed, deploy the snapshot class:
 
 ```bash
@@ -107,7 +158,6 @@ To check the status of the snapshot, run the following:
 
 ```bash
 $ kubectl describe volumesnapshot rbd-pvc-snapshot
-
 Name:         rbd-pvc-snapshot
 Namespace:    default
 Labels:       <none>
@@ -188,7 +238,7 @@ metadata:
 spec:
   containers:
     - name: my-container
-      image: debian
+      image: docker.io/library/debian:latest
       command: ["/bin/bash", "-c"]
       args: [ "tail -f /dev/null" ]
       volumeDevices:
@@ -215,7 +265,7 @@ metadata:
 spec:
   containers:
     - name: my-container
-      image: debian
+      image: docker.io/library/debian:latest
       command: ["/bin/bash", "-c"]
       args: [ "tail -f /dev/null" ]
       volumeDevices:

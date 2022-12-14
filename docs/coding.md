@@ -23,9 +23,9 @@ We use the following convention for specifying imports:
 ```
 <import standard library packages>
 
-<import third-party packages>
-
 <import ceph-csi packages>
+
+<import third-party packages>
 ```
 
 Example:
@@ -37,10 +37,9 @@ import (
  "strings"
  "time"
 
- "github.com/pborman/uuid"
- "github.com/pkg/errors"
+ "github.com/ceph/ceph-csi/internal/util"
 
- "github.com/ceph/ceph-csi/pkg/util"
+ "github.com/pborman/uuid"
 )
 ```
 
@@ -69,3 +68,53 @@ import (
   or retry for it and/or is fully recoverable.
 * Use log level `ERROR` when something occurs which is fatal to the operation,
   but not to the service or application.
+
+### Wrap long lines
+
+At present, we restrict the number of chars in a line to `120` which is the
+default value for the `lll` linter check we have in CI. If your source code line
+or comment goes beyond this limit please try to organize it in such a way it
+is within the line length limit and help on code reading.
+
+Example:
+
+```
+_, err := framework.RunKubectl(cephCSINamespace, "delete", "cm", "ceph-csi-encryption-kms-config", "--namespace", cephCSINamespace, "--ignore-not-found=true")
+```
+
+Instead of above long function signature, we can organize it to something like below
+which is clear and help on easy code reading.
+
+```
+_, err := framework.RunKubectl(
+            cephCSINamespace,
+            "delete",
+            "cm",
+            "ceph-csi-encryption-kms-config",
+            "--namespace",
+            cephCSINamespace,
+            "--ignore-not-found=true")
+```
+
+### Mark Down Rules
+
+* MD014 - Dollar signs used before commands without showing output
+
+  The dollar signs are unnecessary, it is easier to copy and paste and
+  less noisy if the dollar signs are omitted. Especially when the
+  command doesn't list the output, but if the command follows output
+  we can use '$ ' (dollar+space) mainly to differentiate between
+  command and its output.
+
+  scenario 1: when command doesn't follow output
+
+  ```console
+  cd ~/work
+  ```
+
+  scenario 2: when command follow output (use dollar+space)
+
+  ```console
+  $ ls ~/work
+  file1 file2 dir1 dir2 ...
+  ```

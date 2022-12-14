@@ -1,3 +1,4 @@
+{{- if not .Values.externallyManagedConfigmap }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,6 +10,8 @@ metadata:
     component: {{ .Values.provisioner.name }}
     release: {{ .Release.Name }}
     heritage: {{ .Release.Service }}
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 data:
   config.json: |-
 {{ toJson .Values.csiConfig | indent 4 -}}
+{{- end }}

@@ -9,9 +9,30 @@ metadata:
     component: {{ .Values.nodeplugin.name }}
     release: {{ .Release.Name }}
     heritage: {{ .Release.Service }}
-aggregationRule:
-  clusterRoleSelectors:
-    - matchLabels:
-        rbac.rbd.csi.ceph.com/aggregate-to-{{ include "ceph-csi-rbd.nodeplugin.fullname" . }}: "true"
-rules: []
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
+rules:
+{{- if .Values.topology.enabled }}
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+{{- end }}
+  # allow to read Vault Token and connection options from the Tenants namespace
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["list", "get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
 {{- end -}}

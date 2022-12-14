@@ -27,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 )
@@ -42,9 +42,9 @@ const (
 //
 // Note:
 //
-// 1. AtomicWriter reserves the set of pathnames starting with `..`.
-// 2. AtomicWriter offers no concurrency guarantees and must be synchronized
-//    by the caller.
+//  1. AtomicWriter reserves the set of pathnames starting with `..`.
+//  2. AtomicWriter offers no concurrency guarantees and must be synchronized
+//     by the caller.
 //
 // The visible files in this volume are symlinks to files in the writer's data
 // directory.  Actual files are stored in a hidden timestamped directory which
@@ -63,8 +63,9 @@ type AtomicWriter struct {
 
 // FileProjection contains file Data and access Mode
 type FileProjection struct {
-	Data []byte
-	Mode int32
+	Data   []byte
+	Mode   int32
+	FsUser *int64
 }
 
 // NewAtomicWriter creates a new AtomicWriter configured to write to the given
@@ -88,33 +89,40 @@ const (
 //
 // The Write algorithm is:
 //
-//  1.  The payload is validated; if the payload is invalid, the function returns
-//  2.  The current timestamped directory is detected by reading the data directory
-//      symlink
-//  3.  The old version of the volume is walked to determine whether any
-//      portion of the payload was deleted and is still present on disk.
-//  4.  The data in the current timestamped directory is compared to the projected
-//      data to determine if an update is required.
-//  5.  A new timestamped dir is created
-//  6.  The payload is written to the new timestamped directory
-//  7.  Symlinks and directory for new user-visible files are created (if needed).
+//  1. The payload is validated; if the payload is invalid, the function returns
+//     2.  The current timestamped directory is detected by reading the data directory
+//     symlink
 //
-//      For example, consider the files:
-//        <target-dir>/podName
-//        <target-dir>/user/labels
-//        <target-dir>/k8s/annotations
+//  3. The old version of the volume is walked to determine whether any
+//     portion of the payload was deleted and is still present on disk.
 //
-//      The user visible files are symbolic links into the internal data directory:
-//        <target-dir>/podName         -> ..data/podName
-//        <target-dir>/usr -> ..data/usr
-//        <target-dir>/k8s -> ..data/k8s
+//  4. The data in the current timestamped directory is compared to the projected
+//     data to determine if an update is required.
+//     5.  A new timestamped dir is created
 //
-//      The data directory itself is a link to a timestamped directory with
-//      the real data:
-//        <target-dir>/..data          -> ..2016_02_01_15_04_05.12345678/
-//  8.  A symlink to the new timestamped directory ..data_tmp is created that will
-//      become the new data directory
-//  9.  The new data directory symlink is renamed to the data directory; rename is atomic
+//  6. The payload is written to the new timestamped directory
+//     7.  A symlink to the new timestamped directory ..data_tmp is created that will
+//     become the new data directory
+//     8.  The new data directory symlink is renamed to the data directory; rename is atomic
+//     9.  Symlinks and directory for new user-visible files are created (if needed).
+//
+//     For example, consider the files:
+//     <target-dir>/podName
+//     <target-dir>/user/labels
+//     <target-dir>/k8s/annotations
+//
+//     The user visible files are symbolic links into the internal data directory:
+//     <target-dir>/podName         -> ..data/podName
+//     <target-dir>/usr -> ..data/usr
+//     <target-dir>/k8s -> ..data/k8s
+//
+//     The data directory itself is a link to a timestamped directory with
+//     the real data:
+//     <target-dir>/..data          -> ..2016_02_01_15_04_05.12345678/
+//     NOTE(claudiub): We need to create these symlinks AFTER we've finished creating and
+//     linking everything else. On Windows, if a target does not exist, the created symlink
+//     will not work properly if the target ends up being a directory.
+//
 // 10.  Old paths are removed from the user-visible portion of the target directory
 // 11.  The previous timestamped directory is removed, if it exists
 func (w *AtomicWriter) Write(payload map[string]FileProjection) error {
@@ -177,12 +185,6 @@ func (w *AtomicWriter) Write(payload map[string]FileProjection) error {
 	klog.V(4).Infof("%s: performed write of new data to ts data directory: %s", w.logContext, tsDir)
 
 	// (7)
-	if err = w.createUserVisibleFiles(cleanPayload); err != nil {
-		klog.Errorf("%s: error creating visible symlinks in %s: %v", w.logContext, w.targetDir, err)
-		return err
-	}
-
-	// (8)
 	newDataDirPath := filepath.Join(w.targetDir, newDataDirName)
 	if err = os.Symlink(tsDirName, newDataDirPath); err != nil {
 		os.RemoveAll(tsDir)
@@ -190,7 +192,7 @@ func (w *AtomicWriter) Write(payload map[string]FileProjection) error {
 		return err
 	}
 
-	// (9)
+	// (8)
 	if runtime.GOOS == "windows" {
 		os.Remove(dataDirPath)
 		err = os.Symlink(tsDirName, dataDirPath)
@@ -202,6 +204,12 @@ func (w *AtomicWriter) Write(payload map[string]FileProjection) error {
 		os.Remove(newDataDirPath)
 		os.RemoveAll(tsDir)
 		klog.Errorf("%s: error renaming symbolic link for data directory %s: %v", w.logContext, newDataDirPath, err)
+		return err
+	}
+
+	// (9)
+	if err = w.createUserVisibleFiles(cleanPayload); err != nil {
+		klog.Errorf("%s: error creating visible symlinks in %s: %v", w.logContext, w.targetDir, err)
 		return err
 	}
 
@@ -304,7 +312,7 @@ func shouldWriteFile(path string, content []byte) (bool, error) {
 		return false, err
 	}
 
-	return (bytes.Compare(content, contentOnFs) != 0), nil
+	return !bytes.Equal(content, contentOnFs), nil
 }
 
 // pathsToRemove walks the current version of the data directory and
@@ -378,14 +386,12 @@ func (w *AtomicWriter) writePayloadToDir(payload map[string]FileProjection, dir 
 		fullPath := filepath.Join(dir, userVisiblePath)
 		baseDir, _ := filepath.Split(fullPath)
 
-		err := os.MkdirAll(baseDir, os.ModePerm)
-		if err != nil {
+		if err := os.MkdirAll(baseDir, os.ModePerm); err != nil {
 			klog.Errorf("%s: unable to create directory %s: %v", w.logContext, baseDir, err)
 			return err
 		}
 
-		err = ioutil.WriteFile(fullPath, content, mode)
-		if err != nil {
+		if err := ioutil.WriteFile(fullPath, content, mode); err != nil {
 			klog.Errorf("%s: unable to write file %s with mode %v: %v", w.logContext, fullPath, mode, err)
 			return err
 		}
@@ -393,9 +399,17 @@ func (w *AtomicWriter) writePayloadToDir(payload map[string]FileProjection, dir 
 		// open(2) to create the file, so the final mode used is "mode &
 		// ~umask". But we want to make sure the specified mode is used
 		// in the file no matter what the umask is.
-		err = os.Chmod(fullPath, mode)
-		if err != nil {
-			klog.Errorf("%s: unable to write file %s with mode %v: %v", w.logContext, fullPath, mode, err)
+		if err := os.Chmod(fullPath, mode); err != nil {
+			klog.Errorf("%s: unable to change file %s with mode %v: %v", w.logContext, fullPath, mode, err)
+			return err
+		}
+
+		if fileProjection.FsUser == nil {
+			continue
+		}
+		if err := os.Chown(fullPath, int(*fileProjection.FsUser), -1); err != nil {
+			klog.Errorf("%s: unable to change file %s with owner %v: %v", w.logContext, fullPath, int(*fileProjection.FsUser), err)
+			return err
 		}
 	}
 
